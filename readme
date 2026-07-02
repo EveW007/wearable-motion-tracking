@@ -1,0 +1,30 @@
+# IMU Orientation Estimation Using Madgwick Filter
+
+## 1. Project Scope
+
+This project uses an IMU mounted on the head to estimate head orientation during BPPV-related diagnostic and treatment manoeuvres.
+
+The current baseline orientation estimator is the Madgwick IMU filter provided by the supervisor. The IMU provides:
+
+- 3-axis accelerometer data
+- 3-axis gyroscope data
+
+The filter outputs:
+
+- unit quaternion: `qw, qx, qy, qz`
+- Euler angles: `roll, pitch, yaw`
+- estimated gravity vector
+- estimated user/linear acceleration
+
+The current implementation is IMU-only. Therefore, roll and pitch can be corrected using the gravity direction measured by the accelerometer, but yaw/heading is expected to drift over time because no magnetometer or external heading reference is used.
+
+The purpose of this stage is not yet to diagnose BPPV directly. Instead, the objective is to build a reliable orientation-estimation pipeline that can track and verify head positions during manoeuvres such as Dix-Hallpike and Epley.
+
+---
+
+## 2. Data Format
+
+The Arduino/XIAO Seeed board streams raw IMU data over serial in the following format:
+
+```text
+timestamp_ms, ax, ay, az, gx, gy, gz
