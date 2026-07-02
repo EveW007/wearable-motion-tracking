@@ -28,3 +28,19 @@ The Arduino/XIAO Seeed board streams raw IMU data over serial in the following f
 
 ```text
 timestamp_ms, ax, ay, az, gx, gy, gz
+
+Quaternion convention:
+scalar-first Hamilton quaternion [w,x,y,z]
+
+World frame:
++z points upward
+gravity = [0,0,+g]
+
+Euler convention:
+ZYX yaw-pitch-roll
+
+Sensor frame:
+(defined experimentally via six-face accelerometer test)
+
+Head frame:
+(defined by wearable mounting)
