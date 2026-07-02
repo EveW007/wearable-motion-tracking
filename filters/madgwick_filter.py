@@ -9,6 +9,8 @@ Inputs to MadgwickFilter.update():
 Output angles are in radians.
 """
 
+# algorithm itself is based on the original Madgwick paper
+
 from __future__ import annotations
 
 import math

@@ -1,3 +1,5 @@
+# read IMU data from Arduino and run Madgwick filter in real-time
+
 import csv
 import math
 import time

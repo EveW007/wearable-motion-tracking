@@ -1,3 +1,10 @@
+#1. 读取 CSV
+#2. 看 timestamp
+#3. 算 dt / 采样率
+#4. 看 accelerometer 的大小
+#5. 看 gyroscope 的大小
+#6. 画 raw data 的图
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
