@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-df = pd.read_csv("data/raw/imu_test.csv")
+df = pd.read_csv("data/raw/static_20s.csv")
 
 print(df.head())
 print(df.shape)

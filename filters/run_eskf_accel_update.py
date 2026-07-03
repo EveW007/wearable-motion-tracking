@@ -7,8 +7,8 @@ from eskf_imu import IMUESKF, init_quaternion_from_accel
 from eskf_imu import IMUESKF
 
 
-CSV_PATH = "data/raw/imu_test.csv"
-OUTPUT_PATH = "data/processed/eskf_accel_update.csv"
+CSV_PATH = "data/raw/static_20s.csv"
+OUTPUT_PATH = "data/processed/eskf_static_20s.csv"
 
 GYRO_IN_DEG_PER_S = True
 STATIC_TIME_S = 2.0

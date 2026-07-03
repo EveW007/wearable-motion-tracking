@@ -4,6 +4,7 @@
 
 import numpy as np
 
+# quaternion helper 
 
 def q_normalize(q):
     q = np.asarray(q, dtype=float)
@@ -188,15 +189,23 @@ class GyroOnlyPredictor:
             "yaw_rad": euler_rad[2],
         }
     
+
 class IMUESKF:
     """
-    IMU-only Error-State Kalman Filter skeleton.
+    IMU-only Error-State Kalman Filter.
 
-    Current version:
-    - Uses gyroscope to propagate orientation.
-    - Tracks gyro bias.
-    - Propagates 6x6 covariance P.
-    - No accelerometer correction yet.
+    Nominal state:
+        x = {q, bg}
+
+    Error state:
+        dx = [delta_theta, delta_bg]
+
+    Current implementation:
+    - Gyroscope prediction for quaternion orientation
+    - Gyro bias state
+    - 6x6 error covariance propagation
+    - Accelerometer gravity-direction correction for roll/pitch
+    - No magnetometer, so yaw is not absolutely observable
     """
 
     def __init__(
@@ -206,33 +215,62 @@ class IMUESKF:
         P0=None,
         gyro_noise_std=0.02,
         gyro_bias_noise_std=0.001,
+        accel_noise_std=0.08,
+        accel_gate=0.25,
     ):
+        # Nominal orientation quaternion
         if q0 is None:
             self.q = np.array([1.0, 0.0, 0.0, 0.0])
         else:
             self.q = q_normalize(q0)
 
+        # Nominal gyro bias
         if bg0 is None:
             self.bg = np.zeros(3)
         else:
             self.bg = np.asarray(bg0, dtype=float)
 
+        # Error covariance over [delta_theta, delta_bg]
         if P0 is None:
-            # Error state: [delta_theta, delta_bg]
             self.P = np.eye(6) * 1e-3
         else:
             self.P = np.asarray(P0, dtype=float)
 
+        # Noise parameters
         self.gyro_noise_std = gyro_noise_std
         self.gyro_bias_noise_std = gyro_bias_noise_std
+        self.accel_noise_std = accel_noise_std
 
+        # Accelerometer gate:
+        # if ||a|| is too far from 1g, skip accel correction
+        self.accel_gate = accel_gate
+
+    # ------------------------------------------------------------
+    # Prediction step
+    # ------------------------------------------------------------
     def predict(self, gyro_rad_s, dt):
+        """
+        ESKF prediction step.
+
+        Inputs:
+            gyro_rad_s : measured gyro [rad/s]
+            dt         : sample time [s]
+
+        Nominal propagation:
+            omega = gyro - bg
+            q <- q ⊗ Exp(omega dt)
+
+        Error covariance propagation:
+            P <- Fd P Fd.T + Qd
+
+        Current covariance propagation uses first-order discrete approximation.
+        """
         gyro_rad_s = np.asarray(gyro_rad_s, dtype=float)
 
         if dt <= 0:
             return self.get_state()
 
-        # 1. Remove current gyro bias estimate
+        # 1. Bias-corrected angular rate
         omega = gyro_rad_s - self.bg
 
         # 2. Nominal quaternion prediction
@@ -240,94 +278,235 @@ class IMUESKF:
         self.q = q_multiply(self.q, dq)
         self.q = q_normalize(self.q)
 
-        # 3. Error-state covariance prediction
-        # Error state: [delta_theta, delta_bg]
-        F = np.eye(6)
+        # 3. Discrete error-state transition matrix
+        # Error state: dx = [delta_theta, delta_bg]
+        Fd = np.eye(6)
 
-        # attitude error dynamics
-        F[0:3, 0:3] = np.eye(3) - skew(omega) * dt
+        # delta_theta_{k+1} ≈ (I - [omega]x dt) delta_theta_k - I dt delta_bg
+        Fd[0:3, 0:3] = np.eye(3) - skew(omega) * dt
+        Fd[0:3, 3:6] = -np.eye(3) * dt
 
-        # gyro bias affects attitude integration
-        F[0:3, 3:6] = -np.eye(3) * dt
+        # delta_bg_{k+1} ≈ delta_bg_k
+        Fd[3:6, 3:6] = np.eye(3)
 
-        # Simple process noise
-        Q = np.zeros((6, 6))
-        Q[0:3, 0:3] = (self.gyro_noise_std ** 2) * dt * np.eye(3)
-        Q[3:6, 3:6] = (self.gyro_bias_noise_std ** 2) * dt * np.eye(3)
+        # 4. Approximate discrete process noise
+        Qd = np.zeros((6, 6))
+        Qd[0:3, 0:3] = (self.gyro_noise_std ** 2) * dt * np.eye(3)
+        Qd[3:6, 3:6] = (self.gyro_bias_noise_std ** 2) * dt * np.eye(3)
 
-        self.P = F @ self.P @ F.T + Q
+        # 5. Covariance propagation
+        self.P = Fd @ self.P @ Fd.T + Qd
 
-        # Keep P symmetric to avoid numerical weirdness
+        # Keep P symmetric
         self.P = 0.5 * (self.P + self.P.T)
 
         return self.get_state()
-    
-    # v2: gyro → predict q ; accel gravity → correct roll/pitch --> added accel update function
-    def update_accel(self, accel, accel_noise_std=0.08, gravity_ref=None):
+
+    # ------------------------------------------------------------
+    # Accelerometer measurement model
+    # ------------------------------------------------------------
+    def predicted_gravity_body(self, gravity_ref=None):
         """
-        Accelerometer update using gravity direction.
+        Predict gravity direction in sensor/body frame from current quaternion.
 
-        accel: raw accelerometer measurement.
-               If your sensor outputs g, this can be in g.
-               We normalize it, so magnitude does not matter here.
-
-        accel_noise_std: measurement noise for normalized gravity direction.
+        gravity_ref is the reference gravity direction in the world frame.
+        For this project we use +Z gravity convention:
+            gravity_ref = [0, 0, 1]
         """
-
-        accel = np.asarray(accel, dtype=float)
-
-        acc_norm = np.linalg.norm(accel)
-        if acc_norm < 1e-12:
-            return self.get_state()
-
-        # Use direction only
-        z = accel / acc_norm
-
-        # Reference gravity direction in world frame.
-        # Since your static accel is around [0.15, 0.10, 1.03],
-        # your sensor convention seems to use +Z as gravity when flat.
         if gravity_ref is None:
             gravity_ref = np.array([0.0, 0.0, 1.0])
 
-        # Predicted gravity direction in sensor/body frame.
-        # This convention may need sign adjustment later, but start here.
         h = q_rotate_vector(q_conjugate(self.q), gravity_ref)
-        h = h / np.linalg.norm(h)
+        h_norm = np.linalg.norm(h)
 
-        # Innovation
-        r = z - h
+        if h_norm < 1e-12:
+            return np.array([0.0, 0.0, 1.0])
 
-        # Measurement Jacobian
-        # For small attitude error, gravity direction changes by cross product.
+        return h / h_norm
+
+    def perturb_quaternion(self, q, delta_theta):
+        """
+        Right perturbation:
+            q_perturbed = q ⊗ Exp(delta_theta)
+        """
+        dq = q_from_gyro(delta_theta, 1.0)
+        return q_normalize(q_multiply(q, dq))
+
+    def accel_measurement_model(self, accel_g):
+        """
+        Build accelerometer gravity-direction measurement.
+
+        Measurement:
+            z = accel / ||accel||
+
+        Prediction:
+            h(q) = predicted gravity direction in sensor/body frame
+
+        Residual:
+            r = z - h(q)
+
+        Returns:
+            valid, residual, H, R, innovation_norm, acc_norm
+        """
+        accel_g = np.asarray(accel_g, dtype=float)
+        acc_norm = np.linalg.norm(accel_g)
+
+        if acc_norm < 1e-12:
+            return False, None, None, None, np.nan, acc_norm
+
+        # Gate accelerometer update if acceleration is too far from 1g
+        # This avoids using accelerometer when strong linear acceleration is present.
+        if abs(acc_norm - 1.0) > self.accel_gate:
+            return False, None, None, None, np.nan, acc_norm
+
+        # Use direction only
+        z = accel_g / acc_norm
+
+        # Predicted gravity direction
+        h0 = self.predicted_gravity_body()
+
+        # Innovation / residual
+        residual = z - h0
+        innovation_norm = np.linalg.norm(residual)
+
+        # Measurement noise
+        R = (self.accel_noise_std ** 2) * np.eye(3)
+
+        # Measurement Jacobian H
+        # Use numerical Jacobian initially to avoid sign/convention mistakes.
+        # Later this can be replaced by analytic H after frame convention validation.
         H = np.zeros((3, 6))
-        H[:, 0:3] = skew(h)
+        eps = 1e-6
+
+        for j in range(3):
+            delta_theta = np.zeros(3)
+            delta_theta[j] = eps
+
+            q_perturbed = self.perturb_quaternion(self.q, delta_theta)
+
+            # Temporarily compute h(q_perturbed)
+            h_perturbed = q_rotate_vector(
+                q_conjugate(q_perturbed),
+                np.array([0.0, 0.0, 1.0])
+            )
+            h_perturbed = h_perturbed / np.linalg.norm(h_perturbed)
+
+            H[:, j] = (h_perturbed - h0) / eps
+
+        # Accelerometer does not directly measure gyro bias
         H[:, 3:6] = 0.0
 
-        R = (accel_noise_std ** 2) * np.eye(3)
+        return True, residual, H, R, innovation_norm, acc_norm
 
+    # ------------------------------------------------------------
+    # Kalman correction
+    # ------------------------------------------------------------
+    def kalman_update(self, residual, H, R):
+        """
+        Standard Kalman correction over error state.
+
+        S = H P H.T + R
+        K = P H.T S^-1
+        delta_x = K residual
+
+        Covariance is updated using Joseph form for numerical stability.
+        """
         S = H @ self.P @ H.T + R
-        K = self.P @ H.T @ np.linalg.inv(S)
 
-        dx = K @ r
+        # More numerically stable than explicit inverse:
+        # K = P H.T inv(S)
+        K = np.linalg.solve(S, H @ self.P).T
 
-        dtheta = dx[0:3]
-        dbg = dx[3:6]
+        delta_x = K @ residual
 
-        # Inject correction into nominal state
-        dq = q_from_gyro(dtheta, 1.0)   # Exp(dtheta)
-        self.q = q_multiply(self.q, dq)
-        self.q = q_normalize(self.q)
-
-        self.bg = self.bg + dbg
-
-        # Joseph form covariance update: more stable
         I = np.eye(6)
         self.P = (I - K @ H) @ self.P @ (I - K @ H).T + K @ R @ K.T
+
+        # Keep P symmetric
         self.P = 0.5 * (self.P + self.P.T)
 
-        return self.get_state()
+        return delta_x
 
+    # ------------------------------------------------------------
+    # Error injection and reset
+    # ------------------------------------------------------------
+    def inject(self, delta_x):
+        """
+        Inject estimated error state into nominal state.
 
+        delta_x = [delta_theta, delta_bg]
+
+        q  <- q ⊗ Exp(delta_theta)
+        bg <- bg + delta_bg
+        """
+        delta_theta = delta_x[0:3]
+        delta_bg = delta_x[3:6]
+
+        self.q = self.perturb_quaternion(self.q, delta_theta)
+        self.bg = self.bg + delta_bg
+
+    def reset_error_state(self, delta_x=None):
+        """
+        Reset error state after injection.
+
+        In a full ESKF, the covariance should be transformed by a reset Jacobian G:
+            P <- G P G.T
+
+        Current prototype:
+            use small-angle approximation G ≈ I
+
+        So here we only enforce symmetry.
+        """
+        self.P = 0.5 * (self.P + self.P.T)
+
+    # ------------------------------------------------------------
+    # Accelerometer update wrapper
+    # ------------------------------------------------------------
+    def update_accel(self, accel_g):
+        """
+        Full accelerometer correction step.
+
+        This function now only coordinates:
+            1. measurement model
+            2. Kalman update
+            3. error injection
+            4. error reset
+        """
+        valid, residual, H, R, innovation_norm, acc_norm = self.accel_measurement_model(accel_g)
+
+        if not valid:
+            state = self.get_state()
+            state["used_accel"] = False
+            state["innovation_norm"] = innovation_norm
+            state["acc_norm"] = acc_norm
+            return state
+
+        delta_x = self.kalman_update(residual, H, R)
+
+        self.inject(delta_x)
+        self.reset_error_state(delta_x)
+
+        state = self.get_state()
+        state["used_accel"] = True
+        state["innovation_norm"] = innovation_norm
+        state["acc_norm"] = acc_norm
+        return state
+
+    # ------------------------------------------------------------
+    # Full filter step
+    # ------------------------------------------------------------
+    def step(self, gyro_rad_s, accel_g, dt):
+        """
+        One full IMU ESKF step:
+            predict using gyro
+            correct using accelerometer
+        """
+        self.predict(gyro_rad_s, dt)
+        return self.update_accel(accel_g)
+
+    # ------------------------------------------------------------
+    # State output
+    # ------------------------------------------------------------
     def get_state(self):
         euler_rad = q_to_euler(self.q)
 

@@ -9,7 +9,7 @@ PORT = "/dev/cu.usbmodem1101"   # 改成你的真实 port
 BAUD = 115200
 DURATION_S = 20
 
-out_path = Path("data/raw/imu_test.csv")
+out_path = Path("data/raw/static_20s.csv")
 out_path.parent.mkdir(parents=True, exist_ok=True)
 
 print("Opening serial...")
