@@ -1,0 +1,16 @@
+{
+  "trial_name": "roll_test_30s",
+  "duration_s_requested": 30.0,
+  "duration_s_actual": 30.096997415996157,
+  "samples": 295,
+  "skipped": 1,
+  "approx_sample_rate_hz": 9.801642201132376,
+  "port": "/dev/cu.usbmodem1101",
+  "baud": 115200,
+  "notes": "manual +45/-45 roll test, sensor handheld",
+  "units": {
+    "timestamp": "Arduino milliseconds",
+    "accel": "g",
+    "gyro": "deg/s"
+  }
+}

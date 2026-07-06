@@ -1,0 +1,16 @@
+{
+  "trial_name": "yaw_test_30s",
+  "duration_s_requested": 30.0,
+  "duration_s_actual": 30.04953687499801,
+  "samples": 294,
+  "skipped": 1,
+  "approx_sample_rate_hz": 9.783844630384822,
+  "port": "/dev/cu.usbmodem1101",
+  "baud": 115200,
+  "notes": "manual +90/-90 yaw test, sensor handheld",
+  "units": {
+    "timestamp": "Arduino milliseconds",
+    "accel": "g",
+    "gyro": "deg/s"
+  }
+}

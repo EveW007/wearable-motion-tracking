@@ -1,0 +1,197 @@
+# IMU-only Error-State Kalman Filter Formulation
+
+## 1. Purpose
+
+This file documents the custom Python IMU-only ESKF baseline used for orientation estimation from accelerometer and gyroscope data.
+
+The goal is not to estimate full position or velocity. The current filter estimates sensor orientation and gyroscope bias only.
+
+The filter uses:
+- gyroscope measurements for quaternion propagation
+- accelerometer measurements as a gravity-direction correction for roll and pitch
+- no magnetometer, so absolute yaw/heading is not observable
+
+---
+
+## 2. Coordinate and Quaternion Convention
+
+Quaternion convention: q = [qw, qx, qy, qz]
+
+The implementation uses Hamilton quaternion multiplication.
+
+Euler angles are used only for plotting and interpretation. The filter state itself is propagated using quaternions.
+
+Gyroscope measurements are converted to: rad/s
+
+Accelerometer measurements are kept in: g
+
+for the gravity-direction update, because the accelerometer measurement is normalised before correction.
+
+---
+
+## 3. Nominal State
+
+The nominal state is: x = { q, b_g }
+
+where:
+q   = orientation quaternion
+b_g = gyroscope bias, 3x1
+
+The nominal state dimension is not treated as 7 additive states because the quaternion lies on SO(3). Instead, the covariance is maintained over a 6-dimensional error state.
+
+---
+
+## 4. Error State
+
+The error state is: δx = [ δθ, δb_g ]ᵀ
+
+where:
+δθ   = small attitude error, 3x1
+δb_g = gyroscope bias error, 3x1
+
+The covariance matrix is:
+P = cov(δx)
+
+so:
+P is 6 x 6
+
+with structure:
+P[0:3, 0:3] = attitude error covariance
+P[3:6, 3:6] = gyro bias covariance
+
+---
+
+## 5. Prediction Model
+
+The bias-corrected angular rate is: ω = ω_m - b_g
+where:
+ω_m = measured gyroscope angular rate
+b_g = estimated gyroscope bias
+
+The nominal quaternion is propagated using: q_{k+1} = q_k ⊗ Exp(ω Δt)
+
+The gyroscope bias is modelled as slowly varying: b_{g,k+1} = b_{g,k} 
+
+with small process noise.
+
+---
+
+## 6. Error-State Prediction
+
+The current implementation uses a first-order discrete-time approximation of the continuous error dynamics.
+
+The discrete error transition matrix is:
+F_d =
+[ I - [ω]x Δt    -I Δt ]
+[ 0               I    ]
+
+where:  [ω]x is the skew-symmetric matrix of the angular rate.
+
+The covariance is propagated as: P_{k+1} = F_d P_k F_dᵀ + Q_d
+
+The current process noise approximation is:
+Q_θ ≈ σ_g² Δt I
+Q_bg ≈ σ_bg² Δt I
+
+This is a first-order discrete approximation, not an exact matrix-exponential discretisation.
+
+---
+
+## 7. Accelerometer Measurement Model
+
+The accelerometer is used as a gravity-direction measurement.
+
+The measured acceleration is normalised: z = a_m / ||a_m||
+
+The predicted gravity direction in the sensor/body frame is: h(q) = predicted_gravity_body(q)
+
+The residual is: r = z - h(q)
+
+This correction mainly observes roll and pitch. Without a magnetometer, yaw is not directly observable.
+
+Accelerometer update is skipped if the accelerometer norm is too far from 1g, because this indicates significant linear acceleration.
+
+Current gate: 0.8g < ||a_m|| < 1.2g
+
+---
+
+## 8. Measurement Jacobian
+
+The current implementation uses a numerical finite-difference Jacobian:
+
+H[:, j] = (h(q ⊕ ε_j) - h(q)) / ε
+
+This is used initially to avoid sign and frame-convention errors.
+
+A future improvement is to replace this with an analytic Jacobian after the quaternion and frame conventions have been fully validated.
+
+---
+
+## 9. Kalman Update
+
+The standard Kalman correction is:
+
+S = H P Hᵀ + R
+K = P Hᵀ S⁻¹
+δx = K r
+
+where: δx = [δθ, δb_g]ᵀ
+
+The covariance is updated using the Joseph form: P = (I - K H) P (I - K H)ᵀ + K R Kᵀ
+
+This helps preserve symmetry and positive semi-definiteness numerically.
+
+---
+
+## 10. Error Injection
+
+After the Kalman update, the estimated error state is injected into the nominal state.
+
+Attitude injection: q ← q ⊗ Exp(δθ)
+
+Gyroscope bias injection: b_g ← b_g + δb_g
+
+The current implementation uses right-side attitude injection.
+
+---
+
+## 11. Error Reset
+
+After injection, the error state is reset to zero.
+
+The current prototype uses the small-angle approximation: G ≈ I
+
+so the reset covariance transform is approximated as: P ← P
+
+A more formal reset Jacobian can be added later if needed.
+
+---
+
+## 12. Current Limitations
+
+The current filter is an IMU-only orientation ESKF baseline.
+
+Limitations:
+
+* no magnetometer, so absolute yaw is not observable
+* no position or velocity state
+* accelerometer correction assumes acceleration is mostly gravity
+* covariance discretisation uses a first-order approximation
+* accelerometer Jacobian is numerical, not analytic
+* reset Jacobian is currently approximated as identity
+* Euler angles are only for plotting; final relative orientation should use quaternion-relative rotation
+
+---
+
+## 13. Current Validation Status
+
+Static 20s dataset:
+
+* timestamp and sampling rate verified
+* accelerometer norm stable near 1g
+* gyro static bias observed and estimated from initial static period
+* relative roll/pitch stable
+* yaw drift observed as expected
+* yaw covariance grows as expected because yaw is unobservable in IMU-only setup
+
+````

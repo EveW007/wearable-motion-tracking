@@ -1,0 +1,16 @@
+{
+  "trial_name": "maneuver_mock_60s",
+  "duration_s_requested": 60.0,
+  "duration_s_actual": 60.014862333002384,
+  "samples": 584,
+  "skipped": 1,
+  "approx_sample_rate_hz": 9.730922929716634,
+  "port": "/dev/cu.usbmodem1101",
+  "baud": 115200,
+  "notes": "mock Dix-Hallpike/Epley style phase sequence, not clinical",
+  "units": {
+    "timestamp": "Arduino milliseconds",
+    "accel": "g",
+    "gyro": "deg/s"
+  }
+}
