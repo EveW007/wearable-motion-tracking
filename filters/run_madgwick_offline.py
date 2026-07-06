@@ -6,8 +6,8 @@ from pathlib import Path
 from madgwick_filter import MadgwickFilter
 
 
-CSV_PATH = "data/raw/maneuver_mock_60s.csv"
-OUTPUT_PATH = "data/processed/madgwick_maneuver_mock_60s.csv"
+CSV_PATH = "data/raw/yaw_test_30s_orientation.csv"
+OUTPUT_PATH = "data/processed/madgwick_yaw_test_30s_orientation.csv"
 
 GYRO_IN_DEG_PER_S = True
 ACCEL_IN_G = True

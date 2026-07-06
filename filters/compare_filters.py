@@ -3,8 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-ESKF_PATH = "data/processed/eskf_pitch_test_30s.csv"
-MADGWICK_PATH = "data/processed/madgwick_pitch_test_30s.csv"
+ESKF_PATH = "data/processed/eskf_roll_test_30s_orientation.csv"
+MADGWICK_PATH = "data/processed/madgwick_roll_test_30s_orientation.csv"
 
 
 def rms(x):
