@@ -43,4 +43,8 @@ Sensor frame:
 (defined experimentally via six-face accelerometer test)
 
 Head frame:
-(defined by wearable mounting)
+(defined by wearable mounting; see `COORDINATE_HEAD_FRAME.md`)
+
+The Madgwick quaternion describes sensor orientation.  The offline and live
+pipelines additionally apply the fixed wearable mounting and a neutral-pose
+calibration to produce `head_q*` and `head_roll/pitch/yaw*` outputs.

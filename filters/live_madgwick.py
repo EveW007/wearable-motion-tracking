@@ -6,6 +6,7 @@ import statistics
 import time
 import serial
 
+from head_frame import HeadFrameTransform
 from madgwick_filter import MadgwickFilter
 
 
@@ -24,6 +25,12 @@ G = 9.807
 BETA = 0.005
 GYRO_CALIBRATION_TIME_S = 5.0
 MIN_CALIBRATION_SAMPLES = 20
+HEAD_NEUTRAL_CALIBRATION_TIME_S = 2.0
+MIN_NEUTRAL_CALIBRATION_SAMPLES = 10
+
+# q_head_sensor maps sensor coordinates into anatomical head coordinates.
+# Leave identity only while the mounted sensor axes are treated as head axes.
+Q_HEAD_SENSOR = [1.0, 0.0, 0.0, 0.0]
 
 
 def convert_accel(ax, ay, az):
@@ -87,6 +94,75 @@ def calibrate_gyro_bias(ser, duration_s=GYRO_CALIBRATION_TIME_S):
     return bias
 
 
+def calibrate_head_neutral(
+    ser,
+    filt,
+    gyro_bias,
+    duration_s=HEAD_NEUTRAL_CALIBRATION_TIME_S,
+):
+    """Record a static, forward-looking pose as zero head orientation."""
+    print(
+        f"Wear the sensor, look straight ahead, and keep still for "
+        f"{duration_s:.1f} s..."
+    )
+    samples = []
+    deadline = time.monotonic() + duration_s
+    last_t_s = None
+
+    while time.monotonic() < deadline:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        parsed = parse_imu_line(line)
+        if parsed is None:
+            continue
+
+        t_ms, ax, ay, az, gx, gy, gz = parsed
+        t_s = t_ms / 1000.0
+        if last_t_s is None:
+            last_t_s = t_s
+            continue
+
+        dt = t_s - last_t_s
+        last_t_s = t_s
+        if dt <= 0.0 or dt > 1.0:
+            continue
+
+        ax, ay, az = convert_accel(ax, ay, az)
+        gx, gy, gz = convert_gyro(gx, gy, gz)
+        gyro_corrected = (
+            gx - gyro_bias[0],
+            gy - gyro_bias[1],
+            gz - gyro_bias[2],
+        )
+        result = filt.update(
+            ax, ay, az,
+            gyro_corrected[0], gyro_corrected[1], gyro_corrected[2],
+            dt,
+        )
+
+        acc_norm = math.sqrt(ax * ax + ay * ay + az * az)
+        gyro_norm = math.sqrt(sum(value * value for value in gyro_corrected))
+        if 0.8 * G <= acc_norm <= 1.2 * G and gyro_norm <= math.radians(5.0):
+            samples.append([
+                result["qw"], result["qx"], result["qy"], result["qz"]
+            ])
+
+    # At the current ~9.6 Hz rate a 2 s window contains about 19 records, so
+    # this threshold is intentionally separate from the 5 s gyro calibration.
+    if len(samples) < MIN_NEUTRAL_CALIBRATION_SAMPLES:
+        raise RuntimeError(
+            f"Only {len(samples)} valid neutral samples; look straight ahead "
+            "and keep the sensor still during calibration."
+        )
+
+    head_frame = HeadFrameTransform(q_head_sensor=Q_HEAD_SENSOR)
+    head_frame.set_neutral(samples)
+    print(
+        f"Head neutral calibrated from {len(samples)} samples; "
+        "angles are now zeroed."
+    )
+    return head_frame
+
+
 def main():
     ser = serial.Serial(PORT, BAUD, timeout=1)
     time.sleep(2)  # 等 Arduino reset
@@ -95,6 +171,8 @@ def main():
     gyro_bias = calibrate_gyro_bias(ser)
     ser.reset_input_buffer()
     filt = MadgwickFilter(beta=BETA)
+    head_frame = calibrate_head_neutral(ser, filt, gyro_bias)
+    ser.reset_input_buffer()
 
     raw_file = open("raw_imu.csv", "w", newline="")
     out_file = open("orientation_output.csv", "w", newline="")
@@ -114,6 +192,9 @@ def main():
         "qw", "qx", "qy", "qz",
         "roll_rad", "pitch_rad", "yaw_rad",
         "roll_deg", "pitch_deg", "yaw_deg",
+        "head_qw", "head_qx", "head_qy", "head_qz",
+        "head_roll_rad", "head_pitch_rad", "head_yaw_rad",
+        "head_roll_deg", "head_pitch_deg", "head_yaw_deg",
         "gravity_x", "gravity_y", "gravity_z",
         "user_accel_x", "user_accel_y", "user_accel_z",
     ])
@@ -173,21 +254,30 @@ def main():
             roll_deg = result["roll"] * 180.0 / math.pi
             pitch_deg = result["pitch"] * 180.0 / math.pi
             yaw_deg = result["yaw"] * 180.0 / math.pi
+            head = head_frame.transform([
+                result["qw"], result["qx"], result["qy"], result["qz"]
+            ])
+            head_roll_deg = math.degrees(head["roll"])
+            head_pitch_deg = math.degrees(head["pitch"])
+            head_yaw_deg = math.degrees(head["yaw"])
 
             out_writer.writerow([
                 t_s,
                 result["qw"], result["qx"], result["qy"], result["qz"],
                 result["roll"], result["pitch"], result["yaw"],
                 roll_deg, pitch_deg, yaw_deg,
+                head["qw"], head["qx"], head["qy"], head["qz"],
+                head["roll"], head["pitch"], head["yaw"],
+                head_roll_deg, head_pitch_deg, head_yaw_deg,
                 result["gravityX"], result["gravityY"], result["gravityZ"],
                 result["userAccelX"], result["userAccelY"], result["userAccelZ"],
             ])
 
             print(
                 f"t={t_s:.2f}s | "
-                f"roll={roll_deg:7.2f}°, "
-                f"pitch={pitch_deg:7.2f}°, "
-                f"yaw={yaw_deg:7.2f}°"
+                f"head roll={head_roll_deg:7.2f}°, "
+                f"pitch={head_pitch_deg:7.2f}°, "
+                f"yaw={head_yaw_deg:7.2f}°"
             )
 
     except KeyboardInterrupt:

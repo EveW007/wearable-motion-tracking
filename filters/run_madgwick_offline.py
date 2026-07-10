@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from head_frame import HeadFrameTransform
 from madgwick_filter import MadgwickFilter
 
 
@@ -23,6 +24,11 @@ STATIC_TIME_S = 2.0
 # At the current ~10 Hz recording rate, beta=0.1 creates an approximately
 # 1.2-degree full-gradient correction step and visible static chatter.
 BETA = 0.005
+
+# Fixed wearable mounting q_head_sensor = [w, x, y, z].  Identity is only
+# correct while the sensor axes are treated as the head axes.  Replace this
+# after the physical mounting/axis worksheet has been verified.
+Q_HEAD_SENSOR = [1.0, 0.0, 0.0, 0.0]
 
 
 def main():
@@ -143,18 +149,44 @@ def main():
 
     out_df = pd.DataFrame(results)
 
-    # Quick relative Euler angle check.
-    # Later we will replace this with quaternion-relative orientation.
-    out_df["roll_rel_deg"] = out_df["roll_deg"] - out_df["roll_deg"].iloc[0]
-    out_df["pitch_rel_deg"] = out_df["pitch_deg"] - out_df["pitch_deg"].iloc[0]
-    out_df["yaw_rel_deg"] = out_df["yaw_deg"] - out_df["yaw_deg"].iloc[0]
+    # Convert filter orientation (sensor frame) into the mounted head frame,
+    # then zero it using the full initial static window.  This is a quaternion
+    # relative orientation; it is deliberately not Euler-angle subtraction.
+    head_frame = HeadFrameTransform(q_head_sensor=Q_HEAD_SENSOR)
+    neutral_quaternions = out_df.loc[
+        static_mask, ["qw", "qx", "qy", "qz"]
+    ].to_numpy()
+    head_frame.set_neutral(neutral_quaternions)
+
+    head_results = []
+    for q in out_df[["qw", "qx", "qy", "qz"]].to_numpy():
+        head = head_frame.transform(q)
+        head_results.append({
+            "head_qw": head["qw"],
+            "head_qx": head["qx"],
+            "head_qy": head["qy"],
+            "head_qz": head["qz"],
+            "head_roll_rad": head["roll"],
+            "head_pitch_rad": head["pitch"],
+            "head_yaw_rad": head["yaw"],
+            "head_roll_deg": np.rad2deg(head["roll"]),
+            "head_pitch_deg": np.rad2deg(head["pitch"]),
+            "head_yaw_deg": np.rad2deg(head["yaw"]),
+        })
+    out_df = pd.concat([out_df, pd.DataFrame(head_results)], axis=1)
+
+    # Compatibility aliases used by the existing comparison scripts now point
+    # to the correct quaternion-relative head angles.
+    out_df["roll_rel_deg"] = out_df["head_roll_deg"]
+    out_df["pitch_rel_deg"] = out_df["head_pitch_deg"]
+    out_df["yaw_rel_deg"] = out_df["head_yaw_deg"]
 
     Path("data/processed").mkdir(parents=True, exist_ok=True)
     out_df.to_csv(OUTPUT_PATH, index=False)
 
     print(f"Saved Madgwick offline output to {OUTPUT_PATH}")
-    print("Final relative roll/pitch/yaw [deg]:")
-    print(out_df[["roll_rel_deg", "pitch_rel_deg", "yaw_rel_deg"]].tail())
+    print("Final neutral-relative head roll/pitch/yaw [deg]:")
+    print(out_df[["head_roll_deg", "head_pitch_deg", "head_yaw_deg"]].tail())
 
     # Plot absolute Euler angles
     plt.figure(figsize=(10, 4))
@@ -170,12 +202,12 @@ def main():
 
     # Plot relative Euler angles
     plt.figure(figsize=(10, 4))
-    plt.plot(out_df["time_s"], out_df["roll_rel_deg"], label="roll relative")
-    plt.plot(out_df["time_s"], out_df["pitch_rel_deg"], label="pitch relative")
-    plt.plot(out_df["time_s"], out_df["yaw_rel_deg"], label="yaw relative")
+    plt.plot(out_df["time_s"], out_df["head_roll_deg"], label="head roll")
+    plt.plot(out_df["time_s"], out_df["head_pitch_deg"], label="head pitch")
+    plt.plot(out_df["time_s"], out_df["head_yaw_deg"], label="head yaw")
     plt.xlabel("time [s]")
     plt.ylabel("relative angle [deg]")
-    plt.title("Madgwick relative orientation from initial pose")
+    plt.title("Madgwick neutral-relative head orientation")
     plt.legend()
     plt.grid(True)
     plt.show()

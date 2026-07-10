@@ -6,9 +6,15 @@ import numpy as np
 import pandas as pd
 
 from eskf_imu import IMUESKF
+from head_frame import (
+    HeadFrameTransform,
+    average_quaternions,
+    quaternion_from_euler,
+)
 from madgwick_filter import (
     MadgwickFilter,
     init_quaternion_from_gravity,
+    quaternion_multiply,
     quaternion_to_euler,
 )
 
@@ -65,6 +71,37 @@ class ESKFRegressionTests(unittest.TestCase):
         state = eskf.update_zero_rate(measured_bias)
         estimated = np.array([state["bgx"], state["bgy"], state["bgz"]])
         np.testing.assert_allclose(estimated, measured_bias, atol=1e-6)
+
+
+class HeadFrameRegressionTests(unittest.TestCase):
+    def test_neutral_pose_is_zero(self):
+        neutral = quaternion_from_euler(0.2, -0.1, 0.4)
+        transform = HeadFrameTransform()
+        transform.set_neutral([neutral, neutral])
+
+        head = transform.transform(neutral)
+        self.assertAlmostEqual(head["roll"], 0.0, places=12)
+        self.assertAlmostEqual(head["pitch"], 0.0, places=12)
+        self.assertAlmostEqual(head["yaw"], 0.0, places=12)
+
+    def test_mounting_rotation_keeps_head_roll_on_head_roll_axis(self):
+        q_head_sensor = quaternion_from_euler(0.0, 0.0, math.radians(90.0))
+        q_neutral_sensor = q_head_sensor
+        q_head_motion = quaternion_from_euler(math.radians(30.0), 0.0, 0.0)
+        q_current_sensor = quaternion_multiply(q_head_motion, q_head_sensor)
+
+        transform = HeadFrameTransform(q_head_sensor=q_head_sensor)
+        transform.set_neutral([q_neutral_sensor])
+        head = transform.transform(q_current_sensor)
+
+        self.assertAlmostEqual(math.degrees(head["roll"]), 30.0, places=10)
+        self.assertAlmostEqual(head["pitch"], 0.0, places=12)
+        self.assertAlmostEqual(head["yaw"], 0.0, places=12)
+
+    def test_neutral_average_handles_equivalent_quaternion_signs(self):
+        q = quaternion_from_euler(0.1, 0.2, -0.3)
+        mean = average_quaternions([q, [-value for value in q]])
+        self.assertAlmostEqual(abs(float(np.dot(mean, q))), 1.0, places=12)
 
 
 if __name__ == "__main__":
