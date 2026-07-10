@@ -7,8 +7,8 @@ from eskf_imu import IMUESKF, init_quaternion_from_accel
 from eskf_imu import IMUESKF
 
 
-CSV_PATH = "data/raw/yaw_test_30s_orientation.csv"
-OUTPUT_PATH = "data/processed/eskf_yaw_test_30s_orientation.csv"
+CSV_PATH = "data/raw/roll_test_30s_orientation.csv"
+OUTPUT_PATH = "data/processed/eskf_roll_test_30s_orientation.csv"
 
 GYRO_IN_DEG_PER_S = True
 STATIC_TIME_S = 2.0
