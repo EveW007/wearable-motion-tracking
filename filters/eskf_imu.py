@@ -214,9 +214,10 @@ class IMUESKF:
         bg0=None,
         P0=None,
         gyro_noise_std=0.02,
-        gyro_bias_noise_std=0.001,
+        gyro_bias_noise_std=5e-6,
         accel_noise_std=0.08,
         accel_gate=0.25,
+        zero_rate_noise_std=0.002,
     ):
         # Nominal orientation quaternion
         if q0 is None:
@@ -240,6 +241,7 @@ class IMUESKF:
         self.gyro_noise_std = gyro_noise_std
         self.gyro_bias_noise_std = gyro_bias_noise_std
         self.accel_noise_std = accel_noise_std
+        self.zero_rate_noise_std = zero_rate_noise_std
 
         # Accelerometer gate:
         # if ||a|| is too far from 1g, skip accel correction
@@ -490,6 +492,36 @@ class IMUESKF:
         state["used_accel"] = True
         state["innovation_norm"] = innovation_norm
         state["acc_norm"] = acc_norm
+        return state
+
+    # ------------------------------------------------------------
+    # Stationary zero-angular-rate update
+    # ------------------------------------------------------------
+    def update_zero_rate(self, gyro_rad_s):
+        """Update all three gyro-bias axes while the sensor is known static.
+
+        When true angular rate is zero, the gyro measurement is a direct
+        observation of bias:
+
+            z = gyro_measured = bg + noise
+
+        This measurement makes the yaw-axis bias observable during detected
+        stationary periods, which gravity alone cannot do.
+        """
+        gyro_rad_s = np.asarray(gyro_rad_s, dtype=float)
+        residual = gyro_rad_s - self.bg
+
+        H = np.zeros((3, 6))
+        H[:, 3:6] = np.eye(3)
+        R = (self.zero_rate_noise_std ** 2) * np.eye(3)
+
+        delta_x = self.kalman_update(residual, H, R)
+        self.inject(delta_x)
+        self.reset_error_state(delta_x)
+
+        state = self.get_state()
+        state["used_zero_rate"] = True
+        state["zero_rate_innovation_norm"] = np.linalg.norm(residual)
         return state
 
     # ------------------------------------------------------------

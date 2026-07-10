@@ -2,6 +2,7 @@
 
 import csv
 import math
+import statistics
 import time
 import serial
 
@@ -20,6 +21,9 @@ GYRO_IN_DEG_PER_SEC = True
 ACCEL_IN_G = True
 
 G = 9.807
+BETA = 0.005
+GYRO_CALIBRATION_TIME_S = 5.0
+MIN_CALIBRATION_SAMPLES = 20
 
 
 def convert_accel(ax, ay, az):
@@ -35,11 +39,62 @@ def convert_gyro(gx, gy, gz):
     return gx, gy, gz
 
 
-def main():
-    filt = MadgwickFilter(beta=0.1)
+def parse_imu_line(line):
+    parts = line.split(",")
+    if len(parts) != 7:
+        return None
+    try:
+        return tuple(map(float, parts))
+    except ValueError:
+        return None
 
+
+def calibrate_gyro_bias(ser, duration_s=GYRO_CALIBRATION_TIME_S):
+    """Estimate static gyro bias using a robust per-axis median."""
+    print(f"Keep the sensor still: calibrating gyro for {duration_s:.1f} s...")
+    samples = []
+    deadline = time.monotonic() + duration_s
+
+    while time.monotonic() < deadline:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        parsed = parse_imu_line(line)
+        if parsed is None:
+            continue
+
+        _, ax, ay, az, gx, gy, gz = parsed
+        ax, ay, az = convert_accel(ax, ay, az)
+        gx, gy, gz = convert_gyro(gx, gy, gz)
+
+        # Reject obviously invalid acceleration samples.  Direction is not
+        # used here; this check only catches bad records or strong motion.
+        acc_norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if 0.8 * G <= acc_norm <= 1.2 * G:
+            samples.append((gx, gy, gz))
+
+    if len(samples) < MIN_CALIBRATION_SAMPLES:
+        raise RuntimeError(
+            f"Only {len(samples)} valid calibration samples; keep the sensor "
+            "still and check the serial sample rate."
+        )
+
+    bias = tuple(statistics.median(axis) for axis in zip(*samples))
+    bias_dps = tuple(value * 180.0 / math.pi for value in bias)
+    print(
+        "Gyro bias [deg/s]: "
+        f"x={bias_dps[0]:+.5f}, y={bias_dps[1]:+.5f}, z={bias_dps[2]:+.5f} "
+        f"from {len(samples)} samples"
+    )
+    return bias
+
+
+def main():
     ser = serial.Serial(PORT, BAUD, timeout=1)
     time.sleep(2)  # 等 Arduino reset
+    ser.reset_input_buffer()
+
+    gyro_bias = calibrate_gyro_bias(ser)
+    ser.reset_input_buffer()
+    filt = MadgwickFilter(beta=BETA)
 
     raw_file = open("raw_imu.csv", "w", newline="")
     out_file = open("orientation_output.csv", "w", newline="")
@@ -51,6 +106,7 @@ def main():
         "timestamp_s",
         "ax_mps2", "ay_mps2", "az_mps2",
         "gx_rads", "gy_rads", "gz_rads",
+        "gx_corrected_rads", "gy_corrected_rads", "gz_corrected_rads",
     ])
 
     out_writer.writerow([
@@ -73,17 +129,12 @@ def main():
             if not line:
                 continue
 
-            parts = line.split(",")
-
-            if len(parts) != 7:
+            parsed = parse_imu_line(line)
+            if parsed is None:
                 print("Skipping bad line:", line)
                 continue
 
-            try:
-                t_ms, ax, ay, az, gx, gy, gz = map(float, parts)
-            except ValueError:
-                print("Skipping non-numeric line:", line)
-                continue
+            t_ms, ax, ay, az, gx, gy, gz = parsed
 
             t_s = t_ms / 1000.0
 
@@ -100,18 +151,24 @@ def main():
 
             ax, ay, az = convert_accel(ax, ay, az)
             gx, gy, gz = convert_gyro(gx, gy, gz)
+            gx_corrected = gx - gyro_bias[0]
+            gy_corrected = gy - gyro_bias[1]
+            gz_corrected = gz - gyro_bias[2]
 
             result = filt.update(
                 accel_x=ax,
                 accel_y=ay,
                 accel_z=az,
-                gyro_x=gx,
-                gyro_y=gy,
-                gyro_z=gz,
+                gyro_x=gx_corrected,
+                gyro_y=gy_corrected,
+                gyro_z=gz_corrected,
                 dt=dt,
             )
 
-            raw_writer.writerow([t_s, ax, ay, az, gx, gy, gz])
+            raw_writer.writerow([
+                t_s, ax, ay, az, gx, gy, gz,
+                gx_corrected, gy_corrected, gz_corrected,
+            ])
 
             roll_deg = result["roll"] * 180.0 / math.pi
             pitch_deg = result["pitch"] * 180.0 / math.pi

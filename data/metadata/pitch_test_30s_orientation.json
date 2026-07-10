@@ -1,5 +1,5 @@
 {
-  "trial_name": "yaw_test_30s_orientation",
+  "trial_name": "pitch_test_30s_orientation",
   "duration_s_requested": 30.0,
   "duration_s_actual": 30.03986345900921,
   "samples": 294,

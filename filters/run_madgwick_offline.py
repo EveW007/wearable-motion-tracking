@@ -6,8 +6,8 @@ from pathlib import Path
 from madgwick_filter import MadgwickFilter
 
 
-CSV_PATH = "data/raw/yaw_test_30s_orientation.csv"
-OUTPUT_PATH = "data/processed/madgwick_yaw_test_30s_orientation.csv"
+CSV_PATH = "data/raw/static_20s.csv"
+OUTPUT_PATH = "data/processed/madgwick_static_20s.csv"
 
 GYRO_IN_DEG_PER_S = True
 ACCEL_IN_G = True
@@ -20,7 +20,9 @@ G = 9.807
 REMOVE_INITIAL_GYRO_BIAS = True
 STATIC_TIME_S = 2.0
 
-BETA = 0.1
+# At the current ~10 Hz recording rate, beta=0.1 creates an approximately
+# 1.2-degree full-gradient correction step and visible static chatter.
+BETA = 0.005
 
 
 def main():
@@ -88,11 +90,11 @@ def main():
     static_mask = time_s < STATIC_TIME_S
 
     if REMOVE_INITIAL_GYRO_BIAS:
-        bg0 = np.array([
-            np.mean(gx_rad[static_mask]),
-            np.mean(gy_rad[static_mask]),
-            np.mean(gz_rad[static_mask]),
-        ])
+        # Median is robust to the startup spikes present in static_20s.csv.
+        bg0 = np.median(
+            np.column_stack([gx_rad, gy_rad, gz_rad])[static_mask],
+            axis=0,
+        )
 
         print("Removed initial gyro bias [deg/s]:", np.rad2deg(bg0))
 

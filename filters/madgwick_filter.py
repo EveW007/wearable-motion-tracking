@@ -2,7 +2,7 @@
 Python port of the provided TypeScript MadgwickFilter.
 
 Inputs to MadgwickFilter.update():
-    accel_x, accel_y, accel_z : accelerometer readings, normally m/s^2 or g
+    accel_x, accel_y, accel_z : accelerometer readings in m/s^2
     gyro_x, gyro_y, gyro_z    : gyroscope readings in rad/s
     dt                        : sample interval in seconds
 
@@ -16,12 +16,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List
-
-
-# Expected gravity magnitude (m/s^2) and tolerance for init.
-# Accepts 7.8-11.8 m/s^2 to handle noisy readings at startup.
-GRAVITY_EXPECTED = 9.8
-GRAVITY_TOLERANCE = 2.0
 
 
 Quaternion = List[float]
@@ -148,7 +142,10 @@ def init_quaternion_from_gravity(accel_x: float, accel_y: float, accel_z: float)
     """
     norm = math.sqrt(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z)
 
-    if abs(norm - GRAVITY_EXPECTED) < GRAVITY_TOLERANCE and norm > 0.0:
+    # Only the direction is needed for attitude initialisation.  Do not use
+    # the magnitude to infer units: doing so silently initialised to identity
+    # whenever a caller supplied acceleration in g instead of m/s^2.
+    if norm > 1e-12:
         gx = accel_x / norm
         gy = accel_y / norm
         gz = accel_z / norm
@@ -201,7 +198,11 @@ def ahrs_nan_guard(q: Quaternion) -> Dict[str, float]:
 
 @dataclass
 class MadgwickFilter:
-    beta: float = 0.1
+    # The project records at about 10 Hz.  beta=0.1 produced a roughly
+    # 1.2-degree correction step at that rate and a visible static limit
+    # cycle.  0.005 is a conservative project default; tune it again if the
+    # sample rate or motion profile changes.
+    beta: float = 0.005
     beta_mag: float = 0.0
     q: Quaternion = field(default_factory=lambda: [1.0, 0.0, 0.0, 0.0])
     initialized: bool = False
@@ -235,32 +236,37 @@ class MadgwickFilter:
 
         # Normalize accelerometer for gradient computation.
         accel_norm = math.sqrt(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z)
-        if accel_norm > 0.0:
+        if accel_norm > 1e-12:
             anx = accel_x / accel_norm
             any_ = accel_y / accel_norm
             anz = accel_z / accel_norm
         else:
             anx = any_ = anz = 0.0
 
-        # Gradient descent - accelerometer objective function.
-        f0 = 2.0 * (q[1] * q[3] - q[0] * q[2]) - anx
-        f1 = 2.0 * (q[0] * q[1] + q[2] * q[3]) - any_
-        f2 = 2.0 * (0.5 - q[1] * q[1] - q[2] * q[2]) - anz
+        if accel_norm > 1e-12:
+            # Gradient descent - accelerometer objective function.
+            f0 = 2.0 * (q[1] * q[3] - q[0] * q[2]) - anx
+            f1 = 2.0 * (q[0] * q[1] + q[2] * q[3]) - any_
+            f2 = 2.0 * (0.5 - q[1] * q[1] - q[2] * q[2]) - anz
 
-        # Jacobian transposed * f (gradient).
-        g0 = -2.0 * q[2] * f0 + 2.0 * q[1] * f1
-        g1 = 2.0 * q[3] * f0 + 2.0 * q[0] * f1 - 4.0 * q[1] * f2
-        g2 = -2.0 * q[0] * f0 + 2.0 * q[3] * f1 - 4.0 * q[2] * f2
-        g3 = 2.0 * q[1] * f0 + 2.0 * q[2] * f1
+            # Jacobian transposed * f (gradient).
+            g0 = -2.0 * q[2] * f0 + 2.0 * q[1] * f1
+            g1 = 2.0 * q[3] * f0 + 2.0 * q[0] * f1 - 4.0 * q[1] * f2
+            g2 = -2.0 * q[0] * f0 + 2.0 * q[3] * f1 - 4.0 * q[2] * f2
+            g3 = 2.0 * q[1] * f0 + 2.0 * q[2] * f1
 
-        # Normalize gradient. This makes beta equivalent to estimated mean gyro error in rad/s.
-        grad_norm = math.sqrt(g0 * g0 + g1 * g1 + g2 * g2 + g3 * g3)
-        if grad_norm > 1e-12:
-            g0 /= grad_norm
-            g1 /= grad_norm
-            g2 /= grad_norm
-            g3 /= grad_norm
+            # Normalize gradient. This makes beta equivalent to estimated mean gyro error in rad/s.
+            grad_norm = math.sqrt(g0 * g0 + g1 * g1 + g2 * g2 + g3 * g3)
+            if grad_norm > 1e-12:
+                g0 /= grad_norm
+                g1 /= grad_norm
+                g2 /= grad_norm
+                g3 /= grad_norm
+            else:
+                g0 = g1 = g2 = g3 = 0.0
         else:
+            # A missing/zero accelerometer sample contains no gravity
+            # information.  Run gyro-only prediction for this update.
             g0 = g1 = g2 = g3 = 0.0
 
         # Quaternion derivative from gyroscope.
@@ -302,7 +308,7 @@ class MadgwickFilter:
 
 if __name__ == "__main__":
     # Tiny sanity test: flat, still IMU for a few samples.
-    filt = MadgwickFilter(beta=0.1)
+    filt = MadgwickFilter(beta=0.005)
     for _ in range(5):
         out = filt.update(0.0, 0.0, 9.807, 0.0, 0.0, 0.0, 0.01)
     print(out)

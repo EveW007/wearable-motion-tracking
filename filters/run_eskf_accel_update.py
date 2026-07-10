@@ -4,11 +4,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from eskf_imu import IMUESKF, init_quaternion_from_accel
 
-from eskf_imu import IMUESKF
-
-
-CSV_PATH = "data/raw/roll_test_30s_orientation.csv"
-OUTPUT_PATH = "data/processed/eskf_roll_test_30s_orientation.csv"
+CSV_PATH = "data/raw/static_20s.csv"
+OUTPUT_PATH = "data/processed/eskf_static_20s.csv"
 
 GYRO_IN_DEG_PER_S = True
 STATIC_TIME_S = 2.0
@@ -20,6 +17,16 @@ ACCEL_IN_G = True
 # Since accel is in g, static norm should be around 1.0.
 ACC_NORM_EXPECTED = 1.0
 ACC_NORM_TOL = 0.20
+
+# Apply a direct zero-angular-rate bias update only when both tests pass.
+STATIC_ACCEL_NORM_TOL = 0.08
+STATIC_GYRO_NORM_THRESHOLD_DPS = 1.0
+STATIC_MIN_DURATION_S = 0.5
+
+# Bias random-walk density.  The 20-minute static recording changed by at
+# most about 0.007 deg/s, so the former 1e-3 rad/s/sqrt(s) was far too large.
+GYRO_BIAS_NOISE_STD = 5e-6
+ZERO_RATE_NOISE_STD = 0.002
 
 
 df = pd.read_csv(CSV_PATH)
@@ -102,11 +109,10 @@ plt.show()
 
 static_mask = time_s < STATIC_TIME_S
 
-bg0 = np.array([
-    np.mean(gx[static_mask]),
-    np.mean(gy[static_mask]),
-    np.mean(gz[static_mask]),
-])
+bg0 = np.median(
+    np.column_stack([gx, gy, gz])[static_mask],
+    axis=0,
+)
 
 print("Initial gyro bias [deg/s]:", np.rad2deg(bg0))
 
@@ -128,9 +134,16 @@ q0 = init_quaternion_from_accel(acc0)
 print("Initial accel mean [g]:", acc0)
 print("Initial q0:", q0)
 
-eskf = IMUESKF(q0=q0, bg0=bg0)
+eskf = IMUESKF(
+    q0=q0,
+    bg0=bg0,
+    gyro_bias_noise_std=GYRO_BIAS_NOISE_STD,
+    zero_rate_noise_std=ZERO_RATE_NOISE_STD,
+)
 
 results = []
+static_candidate_count = 0
+static_min_samples = max(3, int(np.ceil(STATIC_MIN_DURATION_S / median_dt)))
 
 for i in range(len(df)):
     gyro_rad_s = np.array([gx[i], gy[i], gz[i]])
@@ -140,12 +153,31 @@ for i in range(len(df)):
 
     acc_norm_i = np.linalg.norm(accel)
     use_accel = abs(acc_norm_i - ACC_NORM_EXPECTED) < ACC_NORM_TOL
+    corrected_gyro_norm_dps = np.linalg.norm(
+        np.rad2deg(gyro_rad_s - eskf.bg)
+    )
+    zero_rate_candidate = (
+        abs(acc_norm_i - ACC_NORM_EXPECTED) < STATIC_ACCEL_NORM_TOL
+        and corrected_gyro_norm_dps < STATIC_GYRO_NORM_THRESHOLD_DPS
+    )
+    if zero_rate_candidate:
+        static_candidate_count += 1
+    else:
+        static_candidate_count = 0
+    use_zero_rate = static_candidate_count >= static_min_samples
 
     innovation_norm = np.nan
 
     if use_accel:
         state = eskf.update_accel(accel)
         innovation_norm = state.get("innovation_norm", np.nan)
+
+    zero_rate_innovation_norm = np.nan
+    if use_zero_rate:
+        state = eskf.update_zero_rate(gyro_rad_s)
+        zero_rate_innovation_norm = state.get(
+            "zero_rate_innovation_norm", np.nan
+        )
 
     P_diag = state["P_diag"]
 
@@ -174,6 +206,10 @@ for i in range(len(df)):
         "used_accel": int(use_accel),
         "innovation_norm": innovation_norm,
         "acc_norm": acc_norm_i,
+        "used_zero_rate": int(use_zero_rate),
+        "zero_rate_candidate": int(zero_rate_candidate),
+        "zero_rate_innovation_norm": zero_rate_innovation_norm,
+        "corrected_gyro_norm_dps": corrected_gyro_norm_dps,
     })
 
 out = pd.DataFrame(results)
